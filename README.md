@@ -1,98 +1,309 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Consulta CEP
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API de consulta de CEP com cache Redis, resiliência, fallback automático e observabilidade. Construída em NestJS + TypeScript.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Requisitos
 
-## Description
+- Node.js 18+
+- Docker (para o Redis)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Instalação e execução
 
 ```bash
-$ npm install
+# 1. sobe o Redis
+docker compose up -d
+
+# 2. instala as dependências
+npm install
+
+# 3. configura as variáveis de ambiente
+cp .env.example .env
+
+# desenvolvimento (hot reload)
+npm run start:dev
+
+# produção
+npm run build
+npm run start:prod
 ```
 
-## Compile and run the project
+> **Sem Docker?** A aplicação funciona normalmente mesmo sem Redis — o cache é ignorado de forma transparente e todas as requisições vão direto aos providers. Veja a seção [Degradação graciosa](#degradação-graciosa) para mais detalhes.
+
+## Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `PORT` | `3000` | Porta da API |
+| `REDIS_URL` | `redis://localhost:6379` | URL de conexão do Redis |
+| `CACHE_TTL_SECONDS` | `86400` | TTL para CEP encontrado (padrão: 24h) |
+| `CACHE_NOT_FOUND_TTL_SECONDS` | `3600` | TTL para CEP inexistente (padrão: 1h) |
+
+## Endpoint
+
+```
+GET /cep/:cep
+```
+
+O CEP pode ser enviado com ou sem traço — `01310100` ou `01310-100`.
+
+**Resposta de sucesso — 200:**
+
+```json
+{
+  "cep": "01310-100",
+  "logradouro": "Avenida Paulista",
+  "bairro": "Bela Vista",
+  "cidade": "São Paulo",
+  "estado": "SP"
+}
+```
+
+O contrato de resposta é único independente de qual provider respondeu.
+
+**Respostas de erro:**
+
+| Situação | Status |
+|---|---|
+| CEP com formato inválido | 400 |
+| CEP não encontrado | 404 |
+| Todos os providers indisponíveis | 503 |
+
+## Testes
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm test              # unitários
+npm run test:cov      # com cobertura
+npm run test:watch    # watch mode
 ```
 
-## Run tests
+---
 
-```bash
-# unit tests
-$ npm run test
+## Arquitetura
 
-# e2e tests
-$ npm run test:e2e
+### Estrutura de pastas
 
-# test coverage
-$ npm run test:cov
+```
+src/
+  cache/
+    cache.module.ts       — módulo do cache
+    cache.service.ts      — wrapper do ioredis com degradação graciosa
+  cep/
+    cep.module.ts
+    cep.controller.ts     — valida o formato do CEP
+    cep.service.ts        — orquestra cache, fallback, retry e circuit breaker
+    dto/
+      cep-response.dto.ts — contrato único de resposta
+    providers/
+      cep-provider.interface.ts
+      viacep.provider.ts
+      brasilapi.provider.ts
+    exceptions/
+      cep.exceptions.ts
+    filters/
+      cep-exception.filter.ts
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### Cache Redis
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+CEP é dado praticamente estático — o mesmo CEP consultado 1000 vezes produz sempre a mesma resposta. O cache é a primeira coisa verificada em `findCep`, antes de qualquer chamada a provider externo.
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+**Chaves e TTLs:**
+
+| Chave Redis | Conteúdo | TTL padrão | Motivo |
+|---|---|---|---|
+| `cep:{cep}` | `CepResponseDto` em JSON | 24h | CEPs raramente mudam |
+| `cep:notfound:{cep}` | `true` | 1h | Novos CEPs podem ser criados |
+
+CEPs inexistentes também são cacheados. Sem isso, um CEP inválido consultado repetidamente dispararia o fluxo completo de fallback entre providers a cada requisição — incluindo retries e potencial acionamento do circuit breaker.
+
+**Fluxo do cache em `findCep`:**
+
+```
+findCep("01310100")
+  │
+  ├─ GET cep:01310100 → hit  → retorna dado (sem chamar nenhum provider)
+  ├─ GET cep:notfound:01310100 → hit → lança CepNotFoundException (sem chamar nenhum provider)
+  └─ miss → chama providers → ao finalizar:
+              sucesso → SET cep:01310100 (TTL 24h)
+              404     → SET cep:notfound:01310100 (TTL 1h)
+              503     → nada é cacheado
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+O `SET` é disparado com `void` — não bloqueia a resposta enquanto o Redis confirma a escrita.
 
-## Resources
+#### Degradação graciosa
 
-Check out a few resources that may come in handy when working with NestJS:
+Se o Redis estiver indisponível, `get` retorna `null` e `set` é ignorado silenciosamente. A aplicação continua funcionando normalmente, apenas sem cache. O erro é logado como `WARN`, não `ERROR`, porque não impacta a resposta final ao cliente.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```typescript
+async get<T>(key: string): Promise<T | null> {
+  try {
+    const value = await this.client.get(key);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    this.logger.warn(`Cache GET falhou — degradando para provider`);
+    return null;
+  }
+}
+```
 
-## Support
+O cliente ioredis é configurado com `lazyConnect: true` e `maxRetriesPerRequest: 1`, evitando que falhas de conexão bloqueiem a inicialização da aplicação ou adicionem latência desnecessária.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+---
 
-## Stay in touch
+### Interface de provider como contrato
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```typescript
+interface CepProvider {
+  name: string;
+  fetch(cep: string): Promise<CepResponseDto>;
+}
+```
 
-## License
+Cada provider é responsável por três coisas apenas: chamar sua própria API com timeout de 5s, normalizar a resposta para o contrato único e lançar exceções tipadas.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+O `CepService` recebe um array de providers via token de injeção (`CEP_PROVIDERS`). Para adicionar um terceiro provider amanhã — basta criar o arquivo implementando a interface e adicioná-lo no `useFactory` do módulo. Nenhuma outra linha muda.
+
+---
+
+### Exceções tipadas
+
+| Exceção | Causa |
+|---|---|
+| `CepNotFoundException` | CEP não existe (404 da API externa) |
+| `ProviderTimeoutException` | API não respondeu dentro de 5s |
+| `ProviderUnavailableException` | Erro 5xx ou falha genérica de rede |
+| `AllProvidersFailedException` | Todos os providers esgotaram suas tentativas |
+
+Essa distinção define o comportamento de cada falha:
+
+- **Timeout** → sem retry (pode agravar uma API já sobrecarregada)
+- **404** → sem fallback, cacheia o miss por 1h
+- **5xx** → retriável com backoff exponencial
+- **Ambos falharam** → `AllProvidersFailedException` → 503
+
+---
+
+### Result Pattern em `tryFetch`
+
+```typescript
+async tryFetch(provider, cep): Promise<CepResponseDto | Error>
+```
+
+`tryFetch` nunca lança exceção — retorna o resultado ou o erro como valor. Isso elimina `try/catch` aninhado no código de orquestração e torna o fluxo de fallback linear e explícito:
+
+```typescript
+const result = await this.tryFetchWithRetry(primary, cep);
+
+if (!(result instanceof Error)) return result;
+if (result instanceof CepNotFoundException) throw result;
+
+this.logger.warn(`${primary.name} falhou. Tentando ${secondary.name}.`);
+
+const fallback = await this.tryFetchWithRetry(secondary, cep);
+```
+
+---
+
+### Fallback com round-robin
+
+A cada requisição, o índice do provider primário avança. A requisição 1 vai para ViaCEP, a 2 para BrasilAPI, a 3 para ViaCEP, e assim por diante. Se o provider primário falhar, o secundário é tentado automaticamente.
+
+O **404 não aciona fallback**: um CEP inexistente é uma resposta válida da API, não instabilidade de infraestrutura. Chamar a segunda API seria latência desperdiçada — o resultado seria o mesmo.
+
+---
+
+### Retry com backoff exponencial e jitter
+
+Retry acontece **somente** para `ProviderUnavailableException` (5xx, falha genérica):
+
+```
+delay = base * 2^attempt + random(0, base * 2^attempt * 0.25)
+```
+
+| Tentativa | Base | Jitter máximo | Total máximo |
+|---|---|---|---|
+| 1ª retry | 200ms | 50ms | 250ms |
+| 2ª retry | 400ms | 100ms | 500ms |
+
+O **jitter** (variação aleatória de 25%) evita que múltiplas instâncias retentando simultaneamente sobrecarreguem a API que acabou de se recuperar.
+
+O delay usa `setTimeout` de `timers/promises` — API nativa do Node.js que aceita `AbortSignal`. Quando a aplicação é desligada, o `AbortController` do serviço cancela qualquer delay em andamento imediatamente.
+
+---
+
+### Circuit Breaker
+
+```
+CIRCUIT_THRESHOLD   = 3 falhas consecutivas → abre o circuito
+CIRCUIT_COOLDOWN_MS = 30 segundos
+```
+
+Mantido em memória por provider (`Map<string, CircuitState>`). Quando um provider acumula 3 falhas consecutivas, o circuito abre: chamadas seguintes retornam `ProviderUnavailableException` sem tocar a API. Após 30s o circuito fecha e uma nova tentativa é liberada.
+
+**404 não conta como falha** — não é instabilidade da API.
+
+---
+
+### Observabilidade
+
+Cada ponto relevante do fluxo é logado com o `Logger` do NestJS:
+
+| Evento | Nível |
+|---|---|
+| Cache hit (CEP ou not-found) | LOG |
+| Provider chamado | LOG |
+| CEP encontrado + tempo de resposta | LOG |
+| CEP não encontrado via provider | WARN |
+| Retry + delay calculado | WARN |
+| Fallback acionado + provider destino | WARN |
+| Redis indisponível | WARN |
+| Circuit breaker aberto | ERROR |
+| Circuit breaker fechado | LOG |
+| Todos os providers falharam | ERROR |
+
+---
+
+### Fluxo completo de uma requisição
+
+```
+GET /cep/01310100
+      │
+      ▼
+ Controller
+  └─ valida formato → 400 se inválido
+      │
+      ▼
+ CepService.findCep
+  ├─ Redis: GET cep:01310100
+  │   └─ hit  → retorna (< 1ms, sem chamar nenhum provider)
+  ├─ Redis: GET cep:notfound:01310100
+  │   └─ hit  → lança CepNotFoundException (< 1ms)
+  └─ miss → fetchWithFallback
+      │
+      ▼
+  round-robin → provider primário + secundário
+      │
+      ▼
+ tryFetchWithRetry(primary)
+  ├─ circuit breaker aberto? → erro imediato (sem chamar API)
+  └─ provider.fetch() com timeout 5s
+      ├─ sucesso → Redis SET cep:01310100 (24h) → retorna dado
+      ├─ 404     → Redis SET cep:notfound:01310100 (1h) → lança CepNotFoundException
+      ├─ timeout → sem retry → passa para fallback
+      └─ 5xx     → incrementa circuit breaker
+                   retry 1: aguarda ~200ms
+                   retry 2: aguarda ~400ms
+                   esgotado → passa para fallback
+      │
+      ▼
+ tryFetchWithRetry(secondary)
+  └─ mesma lógica acima
+      │
+  (se ambos falharam)
+      │
+      ▼
+ AllProvidersFailedException → 503
+```
